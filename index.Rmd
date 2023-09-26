@@ -1,0 +1,458 @@
+---
+title: "Ali Wilkening, Nucleosome Pulldown Report"
+author: "Mike Trnka"
+date: "`r format(Sys.time(), '%b %d %Y')`"
+output:
+   html_document:
+      toc: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(tidyverse)
+library(ggrepel)
+library(flextable)
+library(DT)
+```
+
+### Experiment description
+
+Ali prepared samples. She has nucleosomes prepared with variant H2A.Z histones in place
+of canonical H2A. Mononucleosomes are prepared on biotinylated 601 DNA positioning sequence. 
+hESC nuclear lysates (500 µg) were IPed over streptavidin imobilized mononucleosomes (2 µg). 
+Samples were sent to UCSF and on bead trypsin digests using standard UCSF protocol 
+performed by Kathy Li (Sept 1, 2023-ish).
+
+5 Samples included:
+
++ **H2A.Z1**: mononucleosome variant 1.
++ **H2A.Z2**: mononucleosome variant 2.
++ **H2A.Z1.S28T**: mononucleosome variant 1 with point mutation based on Z2 sequence.
++ **biotinylated DNA**: negative control, DNA on strep beads.
++ **no bait**: negative control, strep beads alone.
+
+Peptides were taken up in 7$\mu l$ of 0.1% formic acid and 5$\mu l$ injected for MS analysis.
+
+* **Equipment:**
+   + EasySpray C~18~ 75$\mu m$ x 50mm column (Thermo)
+   + Dionex Ultimate 3000 UPLC system (Thermo). 
+   + Orbitrap Exploris MS (Thermo)
+   + EasySpray nanoESI source (Thermo).
+* **Acquisition Method:**
+   + Precursors acquired at 120k in Orbitrap.
+   + HCD fragmentation at 30NCE.
+   + Product ions measured at 60k in Orbitrap.
+   + 4h LCMS runs.
+* **File List:**
+   + Z20230911-02: **H2A.Z1**
+   + Z20230911-03: **H2A.Z2**
+   + Z20230911-04: **H2A.Z1.S38T**
+   + Z20230911-05: **biotinylatedDNA**
+   + Z20230911-06: **beads only**
+
+* **Data Processing:**
+   + Peaklists generated with PAVA-MP
+   + Searched with Prospector v6.4.8 (installed on pplab server)
+   + DB: UniProtKB.2022.10.25.random.concat **HUMAN**. Trypsin. 2 missed cleavages. Some additional contaminant sequences added. (205,893 Target + 205,893 Decoy sequences).
+   + precursor/product tolerance = 10/30 ppm.
+   + standard mods plus Deamindation on N/Q.
+   + results reported at 1%/1% Protein/Peptide FDR. Multisample with Spectral Counts.
+   + reported INTERESTING homologs.
+   + Additional analysis in R:
+
+### Analysis
+```{r readData, message=F}
+setwd("~/Projects-Collaboration/SanulliLab/Ali/")
+pid <- read_tsv("S230911_humanish_NONE_consistACC.txt", skip=2)
+pid <- pid %>%
+   #filter(`Num Unique` > 1, `Uniq Pep` > 3 | is.na(`Uniq Pep`), `Acc #` != "decoy") %>%
+   filter(`Num Unique` > 1, `Acc #` != "decoy") %>%
+   mutate(SAF = 100 * `Peptide Count` / `Protein Length`,
+          Sample = case_when(ID == 1 ~ "H2A.Z1",
+                             ID == 2 ~ "H2A.Z2",
+                             ID == 3 ~ "H2A.Z1.S38T",
+                             ID == 4 ~ "biotinylatedDNA",
+                             ID == 5 ~ "beads only")
+   )
+```
+
+Protein's were classified 1% FDR. Additionally, I required at least 2 unique peptides 
+for a protein ID ~~or 4 to report a homologous protein~~. There were a lot of issues 
+showing up that were caused by inconsistent homolog reporting (eg, homolog was filtered
+out of the control experiment but not the target. After first pass analysis, many
+seemingly positively enriched proteins were actually just caused due to sloppy assigning
+of peptides to different isoforms. In the future this could be handled more elegantly.
+For the time being, I decided to only report a single isoform/homology for each set
+of matching peptides.
+
+Numbers of proteins / peptides etc, identified are given below.
+I was expecting to ID ~1500-2000 proteins per sample based on previous experiments 
+with Hayden.
+
+For comparison, I'm including results from a paper from Vermulen lab. I downloaded 
+the raw files and processed their data through our pipeline. They started with with
+35 µg of di-nucleosomes pulling down 500 µg of nuclear lysate from HeLa cells and 
+report about 2000 proteins in their TMT labeled samples (eg, I think each pulldown
+used 5 µg and they combined 7 channels).
+
+https://www.nature.com/articles/s41467-018-04084-0
+
+Generally, the overall numbers of proteins / peptide / spectral matches seem
+within reason for the sample and instrument conditions, if a little on the low
+side. Number are probably lower because of the way I am disregarding homologs
+right now.
+
+```{r numProts, echo=F}
+t1 <- read_tsv(file.path("~/Projects-Collaboration/NarlikarLab/Hayden/","vermulen_nucleosome_di_2_test.txt"), skip=2)
+
+t1 <- t1 %>% 
+   filter(`Acc #` != "decoy") %>%
+   mutate(Sample = case_when(ID == 1 ~ "Makowski et 2018"))
+
+pid %>%
+   bind_rows(t1) %>%
+   mutate(Rank.distinct = as.numeric(str_extract(Rank, "[[0-9]]+"))) %>%
+   group_by(Sample) %>% 
+   summarize(num.proteins = n(), 
+             num.proteins.distinct = length(unique(Rank.distinct)),
+             num.peptides = sum(`Num Unique`, na.rm=T),
+             num.spectral.matches = sum(`Peptide Count`, na.rm=T)) %>%
+   regulartable() %>% 
+   autofit() %>%
+   add_header_lines("1% Protein FDR. 1% Peptide FDR") %>%
+   add_header_lines("Table 1. Search Result Statistics per Sample")
+```
+
+##### Transorming the data into a matrix across all 5 runs and normalizing spectral counts across runs:
+
+```{r norm, message=F}
+pid2 <- pid %>% 
+   group_by(`Acc #`, `Gene`, Sample) %>% 
+   summarize(counts = sum(`Peptide Count`, na.rm=T)) %>%
+   pivot_wider(names_from = Sample, values_from = counts) %>%
+   select(Gene, starts_with("H2A"), biotinylatedDNA, `beads only`) %>%
+   ungroup()
+
+# Normalize:
+pid2.norm <- pid2 %>%
+   mutate(across(-c(`Acc #`, Gene), function(col) {10000*col / sum(col, na.rm=T)}))
+
+# Show first 15 lines of table to make sure it looks right:
+pid2.norm %>%
+   slice(1:15) %>%
+   regulartable() %>% 
+   autofit() %>%
+   add_header_lines("Normalized Spectral Count Table")
+
+# Check that column sums are correctly normalized to 10,000:
+apply(pid2.norm[3:7], 2, sum, na.rm=T)
+```
+
+Typically, we would have 2-3 biological replicates for each bait and control
+experiment that we wanted to test.  This would allow us to calculate means
+and p-values and do a volcano plot style analysis to see which proteins are
+enriched above background.  
+
+Since we only have a single replicate, I am going to just look at the ratio
+of normalized spectral counts in the bait vs the higher value between the two
+control conditions. Missing values were imputed as 0.1 normalized counts.
+
+At the end, I've also performed the volcano plot analysis by treating the three 
+H2A.Z pulldowns as if they were independent replicates of the same bait since 
+that should identify interactors that are common to nucleosomes in general.
+
+```{r message=F}
+pid3 <- pid2.norm %>% 
+   mutate(across(3:7, ~ if_else(is.na(.x), 0.1, .x))) %>%
+   mutate(calculations = pmap(list(H2A.Z1,H2A.Z2,H2A.Z1.S38T,biotinylatedDNA,`beads only`), 
+                              function(x1,x2,x3,y1,y2) {
+                                 tar = c(x1,x2,x3)
+                                 con = c(y1,y2)
+                                 tar.mean = mean(tar, na.rm = T)
+                                 con.max = max(con, na.rm = T)
+                                 tt = t.test(tar, con, na.action = na.omit)
+                                 ratio_z1_con = x1 / con.max
+                                 ratio_z2_con = x2 / con.max
+                                 ratio_s38t_con = x3 / con.max
+                                 tibble(tar.mean = tar.mean,
+                                        con.max = con.max,
+                                        ratio_z1_con = ratio_z1_con,
+                                        ratio_z2_con = ratio_z2_con,
+                                        ratio_s38t_con = ratio_s38t_con,
+                                        l2.tarcon = log(tar.mean, 2) - log(con.max, 2),
+                                        p.value.tarcon = tt$p.value
+                                 )
+                              }
+   )
+   ) %>%
+   unnest_wider(col=calculations) %>%
+   # This part filters off duplicate Gene entries and keeps only the one
+   # with max counts.  This is to simplify results form all the homologous
+   # proteins that map to same gene name.
+   group_by(Gene) %>%
+   filter(tar.mean==max(tar.mean)) %>%
+   slice(1) %>%
+   ungroup()
+```
+
+### Results
+
+#### Table 2 - proteomics results, normalized and transformed.
+*Table show normalized spectral counts per protein per experiment as well as
+means for each condition, as well as enrichment ratios*
+
+```{r dataTable, echo=F, message=F, warning=F}
+pid3 %>%
+   mutate(across(where(is.numeric), round, 3)) %>%
+   mutate(`Acc #` = str_c('<a href=\"https://www.uniprot.org/uniprotkb/',
+                       `Acc #`,
+                       '/entry\" target=blank>',
+                       `Acc #`,
+                       '</a>')) %>%
+   DT::datatable(rownames = FALSE, # removes the row number
+                 class = 'cell-border stripe', #adds some basic styling to the table
+                 extensions = c('Buttons', 'Scroller'),
+                 options = list(dom = 'tB',
+                                scroller = TRUE,
+                                buttons = c('copy', 'csv', 'excel'),
+                                scrollY = '500px',
+                                scrollCollapse = T,
+                                pageLength = 50
+                 ),
+                 escape = F,
+                 callback = JS("setTimeout(function() { table.draw(true); }, 500);"),
+                 fillContainer = T
+   )
+```
+
+The data table above is sortable and can be downloaded to an excel file. The 
+scrolling was a bit buggy in my web browser and I didn't have time to try to
+troubleshoot it.
+
+Okay, let's see if any protein's are enriched in the H2A.Z1 pulldown.  Proteins
+with normalized spectral count greater than 1.5 fold over the control are labeled.
+
+```{r message=F, echo=F, warning=F}
+pid3 %>%
+   ggplot(aes(x=con.max, y=H2A.Z1, color=H2A.Z1 / con.max < 1.5)) + 
+   geom_point() +
+   geom_text_repel(aes(label=ifelse(H2A.Z1 / con.max > 1.5, Gene, '')),
+                    box.padding = 0.1, point.padding = 0.1, max.overlaps = 10) +
+   geom_abline(slope = 1, intercept=0, linetype="dashed", color="red") +
+   scale_color_viridis_d(option="C") +
+   theme_bw() +
+   ggtitle("normalized spectral counts, H2A.Z1 IP vs control")
+
+```
+
+Not many proteins stand out as being significantly enriched at this level of
+zoom. H2B is the only one which is expected since nucleosomes are used in the 
+AP bait.
+
+The next plot is just a zoomed in version of the previous plot to hopefully find
+some specific interactors at lowerer abundances:
+
+```{r message=F, echo=F, warning=F}
+pid3 %>%
+   ggplot(aes(x=con.max, y=H2A.Z1, color=H2A.Z1 / con.max < 1.5)) + 
+   geom_point() +
+   geom_text_repel(aes(label=ifelse(H2A.Z1 / con.max > 1.5, Gene, '')),
+                    box.padding = 0.2, point.padding = 0.2, max.overlaps = 15) +
+   geom_abline(slope = 1, intercept=0, linetype="dashed", color="red") +
+   scale_color_viridis_d(option="C") +
+   theme_bw() +
+   ggtitle("normalized spectral counts, H2A.Z1 IP vs control") +
+   xlim(0,35) + ylim(0,35)
+
+```
+
+Listing the proteins that are most enriched:
+```{r message=F, echo=F}
+colNames <- c("Acc #", "Gene", "H2A.Z1", "con.max", "ratio_z1_con")
+pid3 %>%
+   mutate(across(where(is.numeric), round, 3)) %>%
+   filter(ratio_z1_con > 1.5) %>%
+   select(all_of(colNames)) %>%
+   arrange(desc(ratio_z1_con)) %>%
+   mutate(`Acc #` = str_c('<a href=\"https://www.uniprot.org/uniprotkb/',
+                       `Acc #`,
+                       '/entry\" target=blank>',
+                       `Acc #`,
+                       '</a>')) %>%
+   DT::datatable(rownames = FALSE, # removes the row number
+                 class = 'cell-border stripe', #adds some basic styling to the table
+                 extensions = c('Buttons', 'Scroller'),
+                 options = list(dom = 'tB',
+                                scroller = TRUE,
+                                buttons = c('copy', 'csv', 'excel'),
+                                scrollY = '500px',
+                                pageLength = 50
+                 ),
+                 fillContainer = T,
+                 escape = F
+   )
+
+```
+On the far left side of the plot you have some proteins that were basically not
+detected in the control experiment at all and are just plotted because we assigned
+a semi-arbitrary value of 0.1 counts to NA values. 
+
+Amongsth the most enriched hits there are some cytoskeletal proteins: DKFZp686A1668,
+TPM4 as well some nuclear hits that might be interesting: SETD, PURB, FACT complex subunits,
+BPTF, DDX54, UTP15. Why is there a GABA receptor (eg, should be neuron specific)? I have no idea.
+
+Moving on to the H2A.Z2 pulldown, many of the same potential interactors are present
+as well as many of the same cytoskeletal and histone hits (TPM4, BPTF, SUPT16, SSRP, DDX54).
+I didn't see any major hits that look unique to Z2.
+
+```{r message=F, echo=F, warning=F}
+pid3 %>%
+   ggplot(aes(x=con.max, y=H2A.Z2, color=H2A.Z2 / con.max < 1.5)) + 
+   geom_point() +
+   geom_text_repel(aes(label=ifelse(H2A.Z2 / con.max > 1.5, Gene, '')),
+                    box.padding = 0.2, point.padding = 0.2, max.overlaps = 15) +
+   geom_abline(slope = 1, intercept=0, linetype="dashed", color="red") +
+   scale_color_viridis_d(option="C") +
+   theme_bw() +
+   ggtitle("normalized spectral counts, H2A.Z2 IP vs control") +
+   xlim(0,35) + ylim(0,35)
+```
+
+```{r message=F, echo=F}
+colNames <- c("Acc #", "Gene", "H2A.Z2", "con.max", "ratio_z2_con")
+pid3 %>%
+   mutate(across(where(is.numeric), round, 3)) %>%
+   filter(ratio_z2_con > 1.5) %>%
+   select(all_of(colNames)) %>%
+   arrange(desc(ratio_z2_con)) %>%
+   mutate(`Acc #` = str_c('<a href=\"https://www.uniprot.org/uniprotkb/',
+                       `Acc #`,
+                       '/entry\" target=blank>',
+                       `Acc #`,
+                       '</a>')) %>%
+   DT::datatable(rownames = FALSE, # removes the row number
+                 class = 'cell-border stripe', #adds some basic styling to the table
+                 extensions = c('Buttons', 'Scroller'),
+                 options = list(dom = 'tB',
+                                scroller = TRUE,
+                                buttons = c('copy', 'csv', 'excel'),
+                                scrollY = '500px',
+                                pageLength = 50
+                 ),
+                 fillContainer = T,
+                 escape = F
+   )
+```
+
+What about the mutant S128T? Some proteins are the same as previous samples but also
+some different ones. GNL3L looks like it might be specific for this sample. I would
+have to dive deeper into the homology stuff to make sure that something weird still
+isn't going on. PDS5A and PHF14 maybe?
+
+```{r message=F, echo=F, warning=F}
+pid3 %>%
+   ggplot(aes(x=con.max, y=H2A.Z1.S38T, color=H2A.Z1.S38T / con.max < 1.5)) + 
+   geom_point() +
+   geom_text_repel(aes(label=ifelse(H2A.Z1.S38T / con.max > 1.5, Gene, '')),
+                    box.padding = 0.2, point.padding = 0.2, max.overlaps = 15) +
+   geom_abline(slope = 1, intercept=0, linetype="dashed", color="red") +
+   scale_color_viridis_d(option="C") +
+   theme_bw() +
+   ggtitle("normalized spectral counts, H2A.Z1.S38T IP vs control") +
+   xlim(0,35) + ylim(0,35)
+```
+
+```{r message=F, echo=F}
+colNames <- c("Acc #", "Gene", "H2A.Z1.S38T", "con.max", "ratio_s38t_con")
+
+pid3 %>%
+   mutate(across(where(is.numeric), round, 3)) %>%
+   filter(ratio_s38t_con > 1.5) %>%
+   select(all_of(colNames)) %>%
+   arrange(desc(ratio_s38t_con)) %>%
+   mutate(`Acc #` = str_c('<a href=\"https://www.uniprot.org/uniprotkb/',
+                       `Acc #`,
+                       '/entry\" target=blank>',
+                       `Acc #`,
+                       '</a>')) %>%
+   DT::datatable(rownames = FALSE, # removes the row number
+                 class = 'cell-border stripe', #adds some basic styling to the table
+                 extensions = c('Buttons', 'Scroller'),
+                 options = list(dom = 'tB',
+                                scroller = TRUE,
+                                buttons = c('copy', 'csv', 'excel'),
+                                scrollY = '500px',
+                                pageLength = 50
+                 ),
+                 fillContainer = T,
+                 escape = F
+   )
+
+```
+
+Because all three IPs look similar to each other, I decided to treat them as 
+biological replicates and calcualte p-values and plot the data as a volcano plot.
+Having replicates allows us to statistically control better
+for variance between runs.
+
+Volcano plot is showing enrichment in the three nucleosome IPs against background.
+Proteins that are enriched 2-fold with p-value < 0.05 are shown in upper left
+quadrant and labeled. These are typical acceptance criteria for these types of
+experiment.
+
+Here we only see two proteins in that quadrant: histone H4 (eg part of the 
+nucleosome bait) and PWWP2A. The latter is a chromatin binding protein that
+could potentially be interesting: 
+
+https://www.nature.com/articles/s41467-018-06665-5
+
+Interestingly it did standout in any of the individual analysis.
+
+
+
+
+```{r message=F, echo=F, warning=F}
+pid3 %>% 
+   ggplot(aes(x = l2.tarcon, y = -1* log(p.value.tarcon, 10))) +
+   geom_point(color = "lightseagreen") +
+   geom_text_repel(aes(label=ifelse((abs(l2.tarcon) > 1 & p.value.tarcon <= 0.05), Gene, '')),
+                    box.padding = 0.35, point.padding = 0.35) +
+   geom_hline(yintercept = -1*log(0.05, 10), linetype='dashed', col='red') + 
+   geom_vline(xintercept = c(-1,1), linetype='dashed', col='red') +
+   theme_bw() +
+   xlab("log2(RED / OX)") + 
+   ylab("-log10(p.value)") +
+   ggtitle("Protein enrichment NucleosomeIP/control")
+
+```
+
+Proteins in the upper left quadrant:
+
+```{r message=F, echo=F}
+pid3 %>%
+   mutate(across(where(is.numeric), round, 3)) %>%
+   filter(l2.tarcon > 1, p.value.tarcon < 0.05) %>%
+   select(1:2, tar.mean, l2.tarcon, p.value.tarcon) %>%
+   arrange(desc(l2.tarcon)) %>%
+   flextable()
+   # DT::datatable(rownames = FALSE, # removes the row number
+   #               class = 'cell-border stripe', #adds some basic styling to the table
+   #               extensions = c('Buttons', 'Scroller'),
+   #               options = list(dom = 'tB',
+   #                              scroller = TRUE,
+   #                              buttons = c('copy', 'csv', 'excel'),
+   #                              scrollY = '500px',
+   #                              pageLength = 50
+   #               ),
+   #               fillContainer = T
+   # )
+```
+
+### Conclusions / Future
+
+1. Prep has many non-nuclear proteins in it and I believe needs refinement.
+2. Having replicate experiments helps a lot to sort out signal from noise.
+3. TMT labeling would provide more robust and reliable quantitation.
+4. I'm having issues dealing with homologs in the analysis. Need to work out a 
+better method on my end, which might involve switching search platforms.
+
