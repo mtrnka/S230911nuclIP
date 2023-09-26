@@ -409,13 +409,11 @@ https://www.nature.com/articles/s41467-018-06665-5
 Interestingly it did not standout in any of the individual analysis.
 
 
-
-
 ```{r message=F, echo=F, warning=F}
 pid3 %>% 
    ggplot(aes(x = l2.tarcon, y = -1* log(p.value.tarcon, 10))) +
    geom_point(color = "lightseagreen") +
-   geom_text_repel(aes(label=ifelse((abs(l2.tarcon) > 1 & p.value.tarcon <= 0.1), Gene, '')),
+   geom_text_repel(aes(label=ifelse((abs(l2.tarcon) > 0.9 & p.value.tarcon <= 0.1), Gene, '')),
                     box.padding = 0.35, point.padding = 0.35) +
    geom_hline(yintercept = -1*log(0.05, 10), linetype='dashed', col='red') + 
    geom_vline(xintercept = c(-1,1), linetype='dashed', col='red') +
@@ -431,7 +429,7 @@ Proteins in the upper left quadrant:
 ```{r message=F, echo=F}
 pid3 %>%
    mutate(across(where(is.numeric), round, 3)) %>%
-   filter(l2.tarcon > 1, p.value.tarcon < 0.1) %>%
+   filter(l2.tarcon > 0.9, p.value.tarcon < 0.1) %>%
    select(1:2, tar.mean, l2.tarcon, p.value.tarcon) %>%
    arrange(desc(l2.tarcon)) %>%
    flextable()
