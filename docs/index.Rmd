@@ -415,12 +415,12 @@ Interestingly it did standout in any of the individual analysis.
 pid3 %>% 
    ggplot(aes(x = l2.tarcon, y = -1* log(p.value.tarcon, 10))) +
    geom_point(color = "lightseagreen") +
-   geom_text_repel(aes(label=ifelse((abs(l2.tarcon) > 1 & p.value.tarcon <= 0.05), Gene, '')),
+   geom_text_repel(aes(label=ifelse((abs(l2.tarcon) > 1 & p.value.tarcon <= 0.1), Gene, '')),
                     box.padding = 0.35, point.padding = 0.35) +
    geom_hline(yintercept = -1*log(0.05, 10), linetype='dashed', col='red') + 
    geom_vline(xintercept = c(-1,1), linetype='dashed', col='red') +
    theme_bw() +
-   xlab("log2(RED / OX)") + 
+   xlab("log2(H2A.Z nucleosome / control)") + 
    ylab("-log10(p.value)") +
    ggtitle("Protein enrichment NucleosomeIP/control")
 
@@ -431,7 +431,7 @@ Proteins in the upper left quadrant:
 ```{r message=F, echo=F}
 pid3 %>%
    mutate(across(where(is.numeric), round, 3)) %>%
-   filter(l2.tarcon > 1, p.value.tarcon < 0.05) %>%
+   filter(l2.tarcon > 1, p.value.tarcon < 0.1) %>%
    select(1:2, tar.mean, l2.tarcon, p.value.tarcon) %>%
    arrange(desc(l2.tarcon)) %>%
    flextable()
