@@ -344,7 +344,7 @@ pid3 %>%
    )
 ```
 
-What about the mutant S128T? Some proteins are the same as previous samples but also
+What about the mutant S38T? Some proteins are the same as previous samples but also
 some different ones. GNL3L looks like it might be specific for this sample. I would
 have to dive deeper into the homology stuff to make sure that something weird still
 isn't going on. PDS5A and PHF14 maybe?
@@ -406,7 +406,7 @@ could potentially be interesting:
 
 https://www.nature.com/articles/s41467-018-06665-5
 
-Interestingly it did standout in any of the individual analysis.
+Interestingly it did not standout in any of the individual analysis.
 
 
 
